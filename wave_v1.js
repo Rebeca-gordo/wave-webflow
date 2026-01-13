@@ -1,10 +1,12 @@
-<script>
 (() => {
   const canvas = document.getElementById("waves");
   const wrap = document.querySelector(".wave_wrapper");
-  if (!canvas || !wrap) return;
+  if (!canvas || !wrap) {
+    console.log("[waves] missing elements", { canvas: !!canvas, wrap: !!wrap });
+    return;
+  }
 
-  // Evita doble init en Webflow
+  // Avoid double init
   if (canvas.dataset.init === "1") return;
   canvas.dataset.init = "1";
 
@@ -13,25 +15,22 @@
   const SETTINGS = {
     lines: 3,
 
-    // Base: minimal
-    baseAmp: 5,          // px
+    // subtle base
+    baseAmp: 5,
     baseSpeed: 0.30,
     baseFreq: 0.010,
 
-    // Hover: pronounced
-    hoverAmp: 85,        // px extra (sube/baja para más dramatismo)
-    hoverRadius: 190,    // px
+    // pronounced on hover
+    hoverAmp: 90,
+    hoverRadius: 220,
 
-    // Smooth / feel
-    coupling: 0.30,      // contagio entre líneas (Gemeinschaft)
-    samples: 240,
+    coupling: 0.30,
+    samples: 260,
     lineWidth: 2,
 
-    // Look
     color: "rgba(255,255,255,0.85)",
     bg: "transparent",
 
-    // subtle breathing
     breatheAmp: 0.35,
   };
 
@@ -48,16 +47,19 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
-  function clamp01(v){ return Math.max(0, Math.min(1, v)); }
-  function lerp(a,b,t){ return a + (b-a)*t; }
+  function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
 
-  // Cursor state (coords relativas a wave_wrapper)
   let pointer = { x: 0, y: 0, inside: false };
 
   function updatePointer(e) {
     const r = wrap.getBoundingClientRect();
-    const x = (e.clientX ?? (e.touches && e.touches[0]?.clientX) ?? 0) - r.left;
-    const y = (e.clientY ?? (e.touches && e.touches[0]?.clientY) ?? 0) - r.top;
+    const cx = e.clientX ?? (e.touches && e.touches[0] && e.touches[0].clientX) ?? 0;
+    const cy = e.clientY ?? (e.touches && e.touches[0] && e.touches[0].clientY) ?? 0;
+
+    const x = cx - r.left;
+    const y = cy - r.top;
+
     pointer.x = x;
     pointer.y = y;
     pointer.inside = x >= 0 && y >= 0 && x <= r.width && y <= r.height;
@@ -67,21 +69,18 @@
   wrap.addEventListener("touchmove", updatePointer, { passive: true });
   wrap.addEventListener("mouseleave", () => { pointer.inside = false; }, { passive: true });
 
-  // Si hay scroll/resize, el rect cambia — recalcula
   window.addEventListener("resize", resize, { passive: true });
   resize();
 
-  // Energía por línea (0..1)
   const energy = new Array(SETTINGS.lines).fill(0);
   const energyVel = new Array(SETTINGS.lines).fill(0);
 
-  // Fase independiente por línea
   const phase = Array.from({ length: SETTINGS.lines }, (_, i) => Math.random() * Math.PI * 2 + i * 0.9);
   const freqJitter = Array.from({ length: SETTINGS.lines }, () => 0.85 + Math.random() * 0.45);
 
   let t0 = performance.now();
 
-  function frame(now) {
+  function draw(now) {
     const dt = Math.min(0.033, (now - t0) / 1000);
     t0 = now;
 
@@ -96,13 +95,12 @@
       ctx.clearRect(0, 0, W, H);
     }
 
-    // 3 líneas centradas verticalmente
+    // positions
     const topPad = H * 0.30;
     const gap = (H - topPad * 2) / (SETTINGS.lines - 1 || 1);
 
-    // Target energy por línea según cercanía
+    // targets
     const target = new Array(SETTINGS.lines).fill(0);
-
     for (let i = 0; i < SETTINGS.lines; i++) {
       const yLine = topPad + gap * i;
       if (!pointer.inside) { target[i] = 0; continue; }
@@ -114,7 +112,7 @@
       target[i] = n * n;
     }
 
-    // Smooth + coupling (propaga entre líneas)
+    // coupling
     for (let i = 0; i < SETTINGS.lines; i++) {
       const left = i > 0 ? energy[i - 1] : energy[i];
       const right = i < SETTINGS.lines - 1 ? energy[i + 1] : energy[i];
@@ -122,7 +120,6 @@
 
       const coupledTarget = lerp(target[i], neighborMean, SETTINGS.coupling);
 
-      // spring suave
       const accel = (coupledTarget - energy[i]) * 8.0;
       energyVel[i] += accel * dt;
       energyVel[i] *= 0.86;
@@ -130,7 +127,7 @@
       energy[i] = clamp01(energy[i]);
     }
 
-    // Draw
+    // draw lines
     ctx.strokeStyle = SETTINGS.color;
     ctx.lineWidth = SETTINGS.lineWidth;
     ctx.lineCap = "round";
@@ -140,18 +137,15 @@
 
     for (let i = 0; i < SETTINGS.lines; i++) {
       const yLine = topPad + gap * i;
-
-      // amplitud base + hover
       const amp = SETTINGS.baseAmp * (1 + SETTINGS.breatheAmp * breathe) + SETTINGS.hoverAmp * energy[i];
       const freq = SETTINGS.baseFreq * freqJitter[i];
       phase[i] += dt * SETTINGS.baseSpeed * (1.0 + energy[i] * 0.9);
 
       ctx.beginPath();
-
       for (let s = 0; s <= SETTINGS.samples; s++) {
         const x = (s / SETTINGS.samples) * W;
 
-        // boost local cerca del cursor (más dramático donde pasas)
+        // local boost near cursor
         let localBoost = 1;
         if (pointer.inside) {
           const d = Math.abs(x - pointer.x);
@@ -163,13 +157,17 @@
         if (s === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
-
       ctx.stroke();
     }
 
-    requestAnimationFrame(frame);
+    requestAnimationFrame(draw);
   }
 
-  requestAnimationFrame(frame);
+  console.log("[waves] init ok", {
+    wrapper: wrap.className,
+    size: wrap.getBoundingClientRect()
+  });
+
+  requestAnimationFrame(draw);
 })();
-</script>
+
