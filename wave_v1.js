@@ -28,7 +28,7 @@
     samples: 260,
     lineWidth: 2,
 
-    color: "rgba(255,255,255,0.85)",
+    color: "rgba(255, 76, 21, 0.85)",
     bg: "transparent",
 
     breatheAmp: 0.35,
