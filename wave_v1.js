@@ -1,173 +1,155 @@
 (() => {
   const canvas = document.getElementById("waves");
-  const wrap = document.querySelector(".wave_wrapper");
-  if (!canvas || !wrap) {
-    console.log("[waves] missing elements", { canvas: !!canvas, wrap: !!wrap });
-    return;
-  }
-
-  // Avoid double init
-  if (canvas.dataset.init === "1") return;
-  canvas.dataset.init = "1";
-
+  if (!canvas) { console.error("[Waves] canvas #waves not found"); return; }
   const ctx = canvas.getContext("2d", { alpha: true });
 
-  const SETTINGS = {
-    lines: 3,
+  const cfg = {
+    stroke: "#ff4c15",
+    lineWidth: 1.25,
+    stepPx: 2,
 
-    // subtle base
-    baseAmp: 5,
-    baseSpeed: 0.30,
-    baseFreq: 0.010,
+    centerY: 0.52,
+    microOffsetPx: 6,
 
-    // pronounced on hover
-    hoverAmp: 90,
-    hoverRadius: 220,
+    // Base (tu look)
+    baseFreq: 0.85,
+    baseSpeed: 0.22,
+    ampBase: 0.14,
+    breatheSpeed: 0.35,
+    breatheAmount: 0.60,
 
-    coupling: 0.30,
-    samples: 260,
-    lineWidth: 2,
-
-    color: "rgba(255, 76, 21, 0.85)",
-    bg: "transparent",
-
-    breatheAmp: 0.35,
+    // ===== Hover “orgánico” (nuevo) =====
+    hoverAmpBoost: 0.55,     // cuánto sube la amplitud global al hover (0..1)
+    hoverBreatheBoost: 0.35, // cuánto se “respira” más al hover
+    lensRadiusPx: 220,       // radio del “lens” alrededor del cursor
+    lensStrength: 1.25,      // cuánto se abre la onda localmente
+    phaseRippleAmt: 0.55,    // cuánto se “mueve” la fase localmente (orgánico)
+    phaseRippleFreq: 0.020,  // frecuencia espacial del ripple
+    phaseRippleSpeed: 1.10,  // velocidad del ripple (suave)
+    hoverEase: 0.08,         // suavizado entrada/salida (0.05–0.12)
+    idleWobble: 0.10         // micro vida incluso sin hover (muy leve)
   };
 
-  function resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const rect = wrap.getBoundingClientRect();
-    const w = Math.max(1, rect.width);
-    const h = Math.max(1, rect.height);
-
-    canvas.width = Math.floor(w * dpr);
-    canvas.height = Math.floor(h * dpr);
-    canvas.style.width = w + "px";
-    canvas.style.height = h + "px";
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-
-  function clamp01(v) { return Math.max(0, Math.min(1, v)); }
-  function lerp(a, b, t) { return a + (b - a) * t; }
-
-  let pointer = { x: 0, y: 0, inside: false };
-
-  function updatePointer(e) {
-    const r = wrap.getBoundingClientRect();
-    const cx = e.clientX ?? (e.touches && e.touches[0] && e.touches[0].clientX) ?? 0;
-    const cy = e.clientY ?? (e.touches && e.touches[0] && e.touches[0].clientY) ?? 0;
-
-    const x = cx - r.left;
-    const y = cy - r.top;
-
-    pointer.x = x;
-    pointer.y = y;
-    pointer.inside = x >= 0 && y >= 0 && x <= r.width && y <= r.height;
-  }
-
-  wrap.addEventListener("mousemove", updatePointer, { passive: true });
-  wrap.addEventListener("touchmove", updatePointer, { passive: true });
-  wrap.addEventListener("mouseleave", () => { pointer.inside = false; }, { passive: true });
-
-  window.addEventListener("resize", resize, { passive: true });
-  resize();
-
-  const energy = new Array(SETTINGS.lines).fill(0);
-  const energyVel = new Array(SETTINGS.lines).fill(0);
-
-  const phase = Array.from({ length: SETTINGS.lines }, (_, i) => Math.random() * Math.PI * 2 + i * 0.9);
-  const freqJitter = Array.from({ length: SETTINGS.lines }, () => 0.85 + Math.random() * 0.45);
+  const lines = [
+    { phase: 0.0,  alpha: 0.95, mo: -1, ampMul: 1.05, speedMul: 1.00 },
+    { phase: 2.1,  alpha: 0.80, mo:  0, ampMul: 0.85, speedMul: 0.86 },
+    { phase: 4.2,  alpha: 0.70, mo:  1, ampMul: 1.15, speedMul: 0.72 }
+  ];
 
   let t0 = performance.now();
 
-  function draw(now) {
-    const dt = Math.min(0.033, (now - t0) / 1000);
-    t0 = now;
+  // Hover state
+  let pointer = { x: 0, y: 0, inside: false };
+  let hover = 0; // 0..1 (smoothed)
+  let targetHover = 0;
 
-    const rect = wrap.getBoundingClientRect();
-    const W = Math.max(1, rect.width);
-    const H = Math.max(1, rect.height);
+  function onMove(e) {
+    const r = canvas.getBoundingClientRect();
+    pointer.x = (e.clientX ?? (e.touches && e.touches[0]?.clientX) ?? 0) - r.left;
+    pointer.y = (e.clientY ?? (e.touches && e.touches[0]?.clientY) ?? 0) - r.top;
+  }
+  function onEnter() { pointer.inside = true; targetHover = 1; }
+  function onLeave() { pointer.inside = false; targetHover = 0; }
 
-    if (SETTINGS.bg !== "transparent") {
-      ctx.fillStyle = SETTINGS.bg;
-      ctx.fillRect(0, 0, W, H);
-    } else {
-      ctx.clearRect(0, 0, W, H);
+  canvas.addEventListener("mousemove", onMove, { passive: true });
+  canvas.addEventListener("mouseenter", onEnter, { passive: true });
+  canvas.addEventListener("mouseleave", onLeave, { passive: true });
+  canvas.addEventListener("touchmove", (e) => { onEnter(); onMove(e); }, { passive: true });
+  canvas.addEventListener("touchend", onLeave, { passive: true });
+  canvas.addEventListener("touchcancel", onLeave, { passive: true });
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width  = Math.max(1, Math.floor(rect.width  * dpr));
+    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // Gaussian falloff helper (lens)
+  function gauss(x, sigma) {
+    const s2 = sigma * sigma;
+    return Math.exp(-(x * x) / (2 * s2));
+  }
+
+  function drawLine(line, t, w, h, i) {
+    const yBase = h * cfg.centerY + line.mo * cfg.microOffsetPx;
+
+    // amplitud base en px
+    const A0 = h * cfg.ampBase * line.ampMul;
+
+    // breathing base (tuya)
+    const breatheBase = 1 + Math.sin(t * cfg.breatheSpeed + line.phase) * cfg.breatheAmount;
+
+    // hover: sube un poco la amplitud global y el breathing (suave)
+    const hoverAmp = 1 + hover * cfg.hoverAmpBoost;
+    const breatheHover = 1 + hover * cfg.hoverBreatheBoost;
+
+    // micro vida incluso en idle (muy leve, para que no parezca “plano”)
+    const micro = 1 + Math.sin(t * 0.7 + line.phase * 1.3) * cfg.idleWobble * 0.08;
+
+    const A = A0 * breatheBase * hoverAmp * micro * breatheHover;
+
+    // misma frecuencia base para todas => cruces
+    const k = (Math.PI * 2 * cfg.baseFreq) / w;
+    const speed = cfg.baseSpeed * line.speedMul;
+
+    // lens params
+    const sigma = cfg.lensRadiusPx; // px
+    const px = pointer.x || (w * 0.5);
+
+    ctx.globalAlpha = line.alpha;
+    ctx.beginPath();
+
+    for (let x = -30; x <= w + 30; x += cfg.stepPx) {
+      // Lens falloff (0..1) alrededor del cursor
+      const d = x - px;
+      const lens = hover * gauss(d, sigma);
+
+      // 1) amplificación local: la onda se “abre” cerca del cursor
+      const localAmp = 1 + lens * cfg.lensStrength;
+
+      // 2) perturbación de fase suave: da orgánico sin ensuciar la forma
+      //    (no es otra onda sumada, es mover la fase localmente)
+      const ripple =
+        lens *
+        cfg.phaseRippleAmt *
+        Math.sin(d * cfg.phaseRippleFreq - t * cfg.phaseRippleSpeed + line.phase * 0.7);
+
+      // Onda limpia
+      const y = yBase + Math.sin(x * k + t * speed + line.phase + ripple) * (A * localAmp);
+
+      if (x === -30) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
     }
 
-    // positions
-    const topPad = H * 0.30;
-    const gap = (H - topPad * 2) / (SETTINGS.lines - 1 || 1);
+    ctx.stroke();
+  }
 
-    // targets
-    const target = new Array(SETTINGS.lines).fill(0);
-    for (let i = 0; i < SETTINGS.lines; i++) {
-      const yLine = topPad + gap * i;
-      if (!pointer.inside) { target[i] = 0; continue; }
+  function frame(now) {
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width, h = rect.height;
+    if (w < 2 || h < 2) { requestAnimationFrame(frame); return; }
 
-      const dy = Math.abs(pointer.y - yLine);
-      const dx = Math.abs(pointer.x - W * 0.5);
-      const dist = Math.sqrt(dy * dy + (dx * 0.35) * (dx * 0.35));
-      const n = 1 - Math.min(1, dist / SETTINGS.hoverRadius);
-      target[i] = n * n;
-    }
+    const t = (now - t0) / 1000;
 
-    // coupling
-    for (let i = 0; i < SETTINGS.lines; i++) {
-      const left = i > 0 ? energy[i - 1] : energy[i];
-      const right = i < SETTINGS.lines - 1 ? energy[i + 1] : energy[i];
-      const neighborMean = (left + right) * 0.5;
+    // smooth hover
+    hover += (targetHover - hover) * cfg.hoverEase;
 
-      const coupledTarget = lerp(target[i], neighborMean, SETTINGS.coupling);
-
-      const accel = (coupledTarget - energy[i]) * 8.0;
-      energyVel[i] += accel * dt;
-      energyVel[i] *= 0.86;
-      energy[i] += energyVel[i];
-      energy[i] = clamp01(energy[i]);
-    }
-
-    // draw lines
-    ctx.strokeStyle = SETTINGS.color;
-    ctx.lineWidth = SETTINGS.lineWidth;
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = cfg.stroke;
+    ctx.lineWidth = cfg.lineWidth;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
-    const breathe = 0.65 + 0.35 * Math.sin(now * 0.00055);
+    drawLine(lines[0], t, w, h, 0);
+    drawLine(lines[1], t, w, h, 1);
+    drawLine(lines[2], t, w, h, 2);
 
-    for (let i = 0; i < SETTINGS.lines; i++) {
-      const yLine = topPad + gap * i;
-      const amp = SETTINGS.baseAmp * (1 + SETTINGS.breatheAmp * breathe) + SETTINGS.hoverAmp * energy[i];
-      const freq = SETTINGS.baseFreq * freqJitter[i];
-      phase[i] += dt * SETTINGS.baseSpeed * (1.0 + energy[i] * 0.9);
-
-      ctx.beginPath();
-      for (let s = 0; s <= SETTINGS.samples; s++) {
-        const x = (s / SETTINGS.samples) * W;
-
-        // local boost near cursor
-        let localBoost = 1;
-        if (pointer.inside) {
-          const d = Math.abs(x - pointer.x);
-          const m = 1 - Math.min(1, d / (SETTINGS.hoverRadius * 1.15));
-          localBoost = 1 + 0.95 * (m * m) * energy[i];
-        }
-
-        const y = yLine + Math.sin(x * freq + phase[i]) * amp * localBoost;
-        if (s === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
-
-    requestAnimationFrame(draw);
+    requestAnimationFrame(frame);
   }
 
-  console.log("[waves] init ok", {
-    wrapper: wrap.className,
-    size: wrap.getBoundingClientRect()
-  });
-
-  requestAnimationFrame(draw);
+  resize();
+  window.addEventListener("resize", resize, { passive: true });
+  requestAnimationFrame(frame);
 })();
-
